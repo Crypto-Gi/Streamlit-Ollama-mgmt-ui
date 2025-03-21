@@ -3,36 +3,57 @@ import time
 import pandas as pd
 from datetime import datetime
 import json
+from utils.button_handler import handle_button_click
 
 def render_model_management(api):
-    """Render the model management interface with pull, delete, and detail options"""
+    """Render the model management interface with different tabs"""
     
-    st.markdown("<div class='card-title'>Model Management</div>", unsafe_allow_html=True)
+    st.markdown("<div class='header-container'><h1 class='header-text'>Model Management</h1></div>", unsafe_allow_html=True)
     
-    # Check if API is connected first
-    if not st.session_state.get("api_connected", False):
-        st.warning("Not connected to Ollama server. Please configure and test your connection in the sidebar.")
-        
-        # Display example connection instructions
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">Connection Required</div>
-                <div class="card-subtitle">
-                    You need to connect to an Ollama server to manage models.
-                    Please configure and test your connection in the sidebar.
-                </div>
+    # Create tabs for different model management functions
+    tabs = ["Models", "Pull New Model"]
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = "Models"
+    
+    # Draw the tab buttons manually
+    cols = st.columns(len(tabs))
+    for i, tab in enumerate(tabs):
+        tab_class = "sidebar-item active" if st.session_state.active_tab == tab else "sidebar-item"
+        cols[i].markdown(f"""
+            <div class="{tab_class}" onclick="
+                document.querySelector('.active').classList.remove('active');
+                this.classList.add('active');
+                const event = new CustomEvent('tabChange', {{ detail: {{ tab: '{tab}' }} }});
+                window.dispatchEvent(event);
+            ">
+                {tab}
             </div>
-            """, 
-            unsafe_allow_html=True
-        )
-        return
+        """, unsafe_allow_html=True)
+        
+        if cols[i].button(tab, key=f"tab_{tab}", help=f"Switch to {tab}", use_container_width=True):
+            st.session_state.active_tab = tab
+            st.rerun()
     
-    # Create tabs for different management functions
-    tab1, tab2, tab3 = st.tabs(["Pull New Model", "Manage Existing Models", "Model Details"])
+    # Display the active tab content
+    if st.session_state.active_tab == "Models":
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Fetch local models
+        with st.spinner("Fetching models..."):
+            success, local_models = api.list_local_models()
+        
+        if not success:
+            st.error(f"Failed to fetch models: {local_models.get('error', 'Unknown error')}")
+            return
+        
+        models = local_models.get("models", [])
+        
+        # Use our new model cards function
+        render_model_cards(api, models)
     
-    # Pull New Model tab
-    with tab1:
+    elif st.session_state.active_tab == "Pull New Model":
+        st.markdown("<br>", unsafe_allow_html=True)
+        # Pull New Model tab
         st.markdown(
             """
             <div class="card">
@@ -197,211 +218,338 @@ def render_model_management(api):
         # Progress indicator (note: for streaming progress, we would need WebSockets)
         st.markdown("<br/>", unsafe_allow_html=True)
         st.info("Note: Progress reporting for model downloads is limited in this interface. Check server logs for detailed progress.")
+
+def render_model_cards(api, models_data):
+    """Render model cards with status and pull button"""
+    total_models = len(models_data)
+    if total_models == 0:
+        st.info("No models found. Pull a new model to get started.")
+        return
     
-    # Manage Existing Models tab
-    with tab2:
-        # Display models table
-        if not st.session_state.models_data:
-            st.warning("No models available. Pull some models first.")
-        else:
-            # Create dataframe for better display
-            models_data = []
-            for model in st.session_state.models_data:
+    st.markdown(f"<div class='card-title'>Available Models ({total_models})</div>", unsafe_allow_html=True)
+    
+    # Create a grid layout for model cards - 3 per row
+    cols_per_row = 3
+    rows = (total_models + cols_per_row - 1) // cols_per_row  # Ceiling division
+    
+    for row in range(rows):
+        cols = st.columns(cols_per_row)
+        for col_idx in range(cols_per_row):
+            model_idx = row * cols_per_row + col_idx
+            if model_idx < total_models:
+                model = models_data[model_idx]
                 model_name = model.get("name", "Unknown")
+                
+                # Display name (truncate if too long)
+                display_name = model_name
+                if len(display_name) > 25:
+                    display_name = display_name[:22] + "..."
+                
+                # Format the size
                 size_bytes = model.get("size", 0)
+                if size_bytes > 1_000_000_000:  # GB
+                    size_str = f"{size_bytes / 1_000_000_000:.1f} GB"
+                else:  # MB
+                    size_str = f"{size_bytes / 1_000_000:.1f} MB"
                 
-                # Calculate size in appropriate units
-                if size_bytes > 1024 * 1024 * 1024:
-                    size_str = f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
-                elif size_bytes > 1024 * 1024:
-                    size_str = f"{size_bytes / (1024 * 1024):.2f} MB"
+                # Get model family if available
+                family = model.get("family", "Unknown")
+                
+                # Get the last modified date - reformat to a more readable format
+                if "modified_at" in model:
+                    modified_timestamp = model.get("modified_at", 0) / 1_000_000_000  # Convert from nanoseconds
+                    modified_date = datetime.fromtimestamp(modified_timestamp).strftime("%Y-%m-%d")
+                    modified_str = f"Last modified: {modified_date}"
                 else:
-                    size_str = f"{size_bytes / 1024:.2f} KB"
+                    modified_str = "Last modified: Unknown"
                 
-                modified = model.get("modified_at", "Unknown")
-                # Format modification date
-                if modified != "Unknown":
-                    try:
-                        modified_date = datetime.fromisoformat(modified.replace('Z', '+00:00'))
-                        modified = modified_date.strftime("%Y-%m-%d %H:%M")
-                    except (ValueError, AttributeError):
-                        pass
+                # Determine if the model is currently loaded
+                success, running_models = api.list_running_models()
+                is_running = False
+                if success:
+                    running_model_names = [rm.get("name", "") for rm in running_models.get("models", [])]
+                    is_running = model_name in running_model_names
                 
-                models_data.append({
-                    "Model": model_name,
-                    "Size": size_str,
-                    "Modified": modified
-                })
-            
-            # Create DataFrame
-            df = pd.DataFrame(models_data)
-            
-            # Display with styling
-            st.dataframe(
-                df,
-                use_container_width=True,
-                column_config={
-                    "Model": st.column_config.TextColumn("Model"),
-                    "Size": st.column_config.TextColumn("Size"),
-                    "Modified": st.column_config.TextColumn("Last Modified")
-                }
-            )
-            
-            # Model operations
-            st.markdown("<div class='card-title'>Model Operations</div>", unsafe_allow_html=True)
-            
-            # Simplified interface with single model selection
-            selected_model = st.selectbox(
-                "Select Model",
-                options=["Select..."] + [model.get("name", "") for model in st.session_state.models_data],
-                key="operations_model_select"
-            )
-            
-            # Operation selection
-            operation = st.selectbox(
-                "Select Operation",
-                options=["Select...", "Load Model into VRAM", "Unload Model from VRAM", "Delete Model"],
-                key="model_operation"
-            )
-            
-            # Conditional UI based on operation
-            if operation == "Load Model into VRAM":
-                keep_alive_options = {
-                    "5 minutes": "5m",
-                    "10 minutes": "10m",
-                    "30 minutes": "30m",
-                    "1 hour": "1h",
-                    "4 hours": "4h",
-                    "Indefinite": "1d",
-                    "Custom (minutes)": "custom"
-                }
-                
-                keep_alive = st.selectbox(
-                    "Keep Alive Duration",
-                    options=list(keep_alive_options.keys()),
-                    index=0,
-                    key="keep_alive_select"
-                )
-                
-                # Add custom minutes input field if "Custom" is selected
-                custom_minutes = None
-                if keep_alive == "Custom (minutes)":
-                    custom_minutes = st.number_input(
-                        "Enter custom duration in minutes",
-                        min_value=1,
-                        value=30,
-                        help="Enter the number of minutes to keep the model loaded in VRAM",
-                        key="custom_minutes_input"
-                    )
-                
-                operation_button = st.button("Load Model", key="load_model_button", type="primary")
-                
-                if operation_button:
-                    if selected_model == "Select...":
-                        st.error("Please select a model")
-                    else:
-                        # Process keep_alive value
-                        keep_alive_value = keep_alive_options[keep_alive]
-                        if keep_alive == "Custom (minutes)":
-                            keep_alive_value = f"{custom_minutes}m"
-                            
-                        with st.spinner(f"Loading model {selected_model} into VRAM..."):
-                            result = api.load_model_into_vram(
-                                selected_model, 
-                                keep_alive=keep_alive_value
-                            )
-                            
-                            if "error" not in result:
-                                st.success(f"Model {selected_model} loaded successfully with keep-alive time of {keep_alive}!")
+                # Create a card for the model with a consistent yellow background for dark mode
+                with cols[col_idx]:
+                    # Construct model card with yellow background for dark mode
+                    card_content = f"""
+                    <div class="model-card">
+                        <div class="model-card-title">{display_name}</div>
+                        <div class="model-card-subtitle">
+                            <strong>Size:</strong> {size_str}<br/>
+                            <strong>Family:</strong> {family}<br/>
+                            {modified_str}
+                        </div>
+                        <div class="model-status">
+                            <div><div class="model-status-indicator"></div></div>
+                            <div class="model-status-text">Available</div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(card_content, unsafe_allow_html=True)
+                    
+                    # Create action buttons (load or delete) below the card
+                    if st.session_state.get("active_tab") == "Models":
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            # If the model is running, show "Unload" instead of "Load"
+                            if is_running:
+                                if st.button("Unload", key=f"unload_{model_name}"):
+                                    with st.spinner(f"Unloading model {model_name}..."):
+                                        success, response = api.unload_model(model_name)
+                                        if success:
+                                            st.success(f"Successfully unloaded model {model_name}")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed to unload model: {response.get('error', 'Unknown error')}")
                             else:
-                                st.error(f"Error loading model: {result.get('error')}")
-            
-            elif operation == "Unload Model from VRAM":
-                st.info("This will immediately unload the model from VRAM by setting keep-alive to 0 seconds.")
-                
-                operation_button = st.button("Unload Model", key="unload_model_button", type="primary")
-                
-                if operation_button:
-                    if selected_model == "Select...":
-                        st.error("Please select a model")
-                    else:
-                        with st.spinner(f"Unloading model {selected_model} from VRAM..."):
-                            result = api.remove_model_from_vram(selected_model)
-                            
-                            if "error" not in result:
-                                st.success(f"Model {selected_model} unloaded successfully from VRAM!")
-                            else:
-                                st.error(f"Error unloading model: {result.get('error')}")
-            
-            elif operation == "Delete Model":
-                st.warning("⚠️ Warning: This action cannot be undone. The model will be permanently deleted from your system.")
-                
-                # Confirmation checkbox
-                confirm_delete = st.checkbox("I confirm that I want to delete this model", key="confirm_delete")
-                
-                operation_button = st.button("Delete Model", key="delete_model_button", type="primary", disabled=not confirm_delete)
-                
-                if operation_button:
-                    if selected_model == "Select...":
-                        st.error("Please select a model")
-                    elif not confirm_delete:
-                        st.error("Please confirm deletion")
-                    else:
-                        with st.spinner(f"Deleting model {selected_model}..."):
-                            result = api.delete_model(selected_model)
-                            
-                            if "error" not in result:
-                                st.success(f"Model {selected_model} deleted successfully!")
-                                # Force refresh of models data
-                                st.session_state.models_data = api.list_models()
-                                time.sleep(1)  # Brief pause to ensure UI updates
-                                st.rerun()  # Refresh the page to update model list
-                            else:
-                                st.error(f"Error deleting model: {result.get('error')}")
-            
-            elif operation != "Select...":
-                st.info("Please select an operation from the dropdown above.")
-    
-    # Model Details tab
-    with tab3:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">Model Details</div>
-                <div class="card-subtitle">
-                    View detailed information about a specific model.
-                </div>
+                                if st.button("Load (60m)", key=f"load_{model_name}"):
+                                    with st.spinner(f"Loading model {model_name}..."):
+                                        # Default to 60 minutes keep-alive time
+                                        success, response = api.load_model(model_name, 60)
+                                        if success:
+                                            st.success(f"Successfully loaded model {model_name} (expires in 60 minutes)")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed to load model: {response.get('error', 'Unknown error')}")
+                        
+                        # Add a delete button for all models
+                        with col2:
+                            if st.button("Delete", key=f"delete_{model_name}"):
+                                with st.spinner(f"Deleting model {model_name}..."):
+                                    success, response = api.delete_model(model_name)
+                                    if success:
+                                        st.success(f"Successfully deleted model {model_name}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to delete model: {response.get('error', 'Unknown error')}")
+
+# Model Details tab
+def render_model_details(api):
+    st.markdown(
+        """
+        <div class="card">
+            <div class="card-title">Model Details</div>
+            <div class="card-subtitle">
+                View detailed information about a specific model.
             </div>
-            """, 
-            unsafe_allow_html=True
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+    
+    # Model selection for details
+    detail_model = st.selectbox(
+        "Select Model",
+        options=["Select..."] + [model.get("name", "") for model in st.session_state.models_data],
+        key="detail_model_select"
+    )
+    
+    if st.button("View Details", key="view_details_button"):
+        # Set button clicked state for future reference
+        st.session_state.button_clicked["view_details_button"] = True
+        
+    # Check if button was clicked previously to avoid double-click issues
+    if st.session_state.get("button_clicked", {}).get("view_details_button", False):
+        st.session_state.button_clicked["view_details_button"] = False
+        if detail_model == "Select...":
+            st.error("Please select a model")
+        else:
+            with st.spinner(f"Fetching details for {detail_model}..."):
+                details = api.get_model_details(detail_model)
+                
+                if "error" not in details:
+                    # Display model details in a card
+                    st.markdown(
+                        f"""
+                        <div class="card">
+                            <div class="card-title">{detail_model}</div>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+                    
+                    # Format model parameters nicely
+                    st.json(details)
+                else:
+                    st.error(f"Error fetching model details: {details.get('error')}")
+
+# Manage Existing Models tab
+def render_model_operations(api):
+    # Display models table
+    if not st.session_state.models_data:
+        st.warning("No models available. Pull some models first.")
+    else:
+        # Create dataframe for better display
+        models_data = []
+        for model in st.session_state.models_data:
+            model_name = model.get("name", "Unknown")
+            size_bytes = model.get("size", 0)
+            
+            # Calculate size in appropriate units
+            if size_bytes > 1024 * 1024 * 1024:
+                size_str = f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+            elif size_bytes > 1024 * 1024:
+                size_str = f"{size_bytes / (1024 * 1024):.2f} MB"
+            else:
+                size_str = f"{size_bytes / 1024:.2f} KB"
+            
+            modified = model.get("modified_at", "Unknown")
+            # Format modification date
+            if modified != "Unknown":
+                try:
+                    modified_date = datetime.fromisoformat(modified.replace('Z', '+00:00'))
+                    modified = modified_date.strftime("%Y-%m-%d %H:%M")
+                except (ValueError, AttributeError):
+                    pass
+            
+            models_data.append({
+                "Model": model_name,
+                "Size": size_str,
+                "Modified": modified
+            })
+        
+        # Create DataFrame
+        df = pd.DataFrame(models_data)
+        
+        # Display with styling
+        st.dataframe(
+            df,
+            use_container_width=True,
+            column_config={
+                "Model": st.column_config.TextColumn("Model"),
+                "Size": st.column_config.TextColumn("Size"),
+                "Modified": st.column_config.TextColumn("Last Modified")
+            }
         )
         
-        # Model selection for details
-        detail_model = st.selectbox(
+        # Model operations
+        st.markdown("<div class='card-title'>Model Operations</div>", unsafe_allow_html=True)
+        
+        # Simplified interface with single model selection
+        selected_model = st.selectbox(
             "Select Model",
             options=["Select..."] + [model.get("name", "") for model in st.session_state.models_data],
-            key="detail_model_select"
+            key="operations_model_select"
         )
         
-        if st.button("View Details", key="view_details_button"):
-            if detail_model == "Select...":
-                st.error("Please select a model")
-            else:
-                with st.spinner(f"Fetching details for {detail_model}..."):
-                    details = api.get_model_details(detail_model)
-                    
-                    if "error" not in details:
-                        # Display model details in a card
-                        st.markdown(
-                            f"""
-                            <div class="card">
-                                <div class="card-title">{detail_model}</div>
-                            </div>
-                            """, 
-                            unsafe_allow_html=True
+        # Operation selection
+        operation = st.selectbox(
+            "Select Operation",
+            options=["Select...", "Load Model into VRAM", "Unload Model from VRAM", "Delete Model"],
+            key="model_operation"
+        )
+        
+        # Conditional UI based on operation
+        if operation == "Load Model into VRAM":
+            keep_alive_options = {
+                "5 minutes": "5m",
+                "10 minutes": "10m",
+                "30 minutes": "30m",
+                "1 hour": "1h",
+                "4 hours": "4h",
+                "Indefinite": "1d",
+                "Custom (minutes)": "custom"
+            }
+            
+            keep_alive = st.selectbox(
+                "Keep Alive Duration",
+                options=list(keep_alive_options.keys()),
+                index=0,
+                key="keep_alive_select"
+            )
+            
+            # Add custom minutes input field if "Custom" is selected
+            custom_minutes = None
+            if keep_alive == "Custom (minutes)":
+                custom_minutes = st.number_input(
+                    "Enter custom duration in minutes",
+                    min_value=1,
+                    value=30,
+                    help="Enter the number of minutes to keep the model loaded in VRAM",
+                    key="custom_minutes_input"
+                )
+            
+            operation_button = st.button("Load Model", key="load_model_button", type="primary")
+            
+            if operation_button:
+                # Set button clicked state for future reference
+                st.session_state.button_clicked["load_model_button"] = True
+                
+            # Check if button was clicked previously to avoid double-click issues
+            if operation_button or handle_button_click("load_model_button"):
+                if selected_model == "Select...":
+                    st.error("Please select a model")
+                else:
+                    # Process keep_alive value
+                    keep_alive_value = keep_alive_options[keep_alive]
+                    if keep_alive == "Custom (minutes)":
+                        keep_alive_value = f"{custom_minutes}m"
+                        
+                    with st.spinner(f"Loading model {selected_model} into VRAM..."):
+                        result = api.load_model_into_vram(
+                            selected_model, 
+                            keep_alive=keep_alive_value
                         )
                         
-                        # Format model parameters nicely
-                        st.json(details)
-                    else:
-                        st.error(f"Error fetching model details: {details.get('error')}")
+                        if "error" not in result:
+                            st.success(f"Model {selected_model} loaded successfully with keep-alive time of {keep_alive}!")
+                        else:
+                            st.error(f"Error loading model: {result.get('error')}")
+
+        elif operation == "Unload Model from VRAM":
+            st.info("This will immediately unload the model from VRAM by setting keep-alive to 0 seconds.")
+            
+            operation_button = st.button("Unload Model", key="unload_model_button", type="primary")
+            
+            if operation_button:
+                # Set button clicked state for future reference
+                st.session_state.button_clicked["unload_model_button"] = True
+                
+            # Check if button was clicked previously to avoid double-click issues
+            if operation_button or handle_button_click("unload_model_button"):
+                if selected_model == "Select...":
+                    st.error("Please select a model")
+                else:
+                    with st.spinner(f"Unloading model {selected_model} from VRAM..."):
+                        result = api.remove_model_from_vram(selected_model)
+                        
+                        if "error" not in result:
+                            st.success(f"Model {selected_model} unloaded successfully from VRAM!")
+                        else:
+                            st.error(f"Error unloading model: {result.get('error')}")
+
+        elif operation == "Delete Model":
+            st.warning("⚠️ Warning: This action cannot be undone. The model will be permanently deleted from your system.")
+            
+            # Confirmation checkbox
+            confirm_delete = st.checkbox("I confirm that I want to delete this model", key="confirm_delete")
+            
+            operation_button = st.button("Delete Model", key="delete_model_button", type="primary", disabled=not confirm_delete)
+            
+            if operation_button:
+                # Set button clicked state for future reference
+                st.session_state.button_clicked["delete_model_button"] = True
+                
+            # Check if button was clicked previously to avoid double-click issues
+            if operation_button or handle_button_click("delete_model_button"):
+                if selected_model == "Select...":
+                    st.error("Please select a model")
+                elif not confirm_delete:
+                    st.error("Please confirm deletion")
+                else:
+                    with st.spinner(f"Deleting model {selected_model}..."):
+                        result = api.delete_model(selected_model)
+                        
+                        if "error" not in result:
+                            st.success(f"Model {selected_model} deleted successfully!")
+                            # Force refresh of models data
+                            st.session_state.models_data = api.list_models()
+                            time.sleep(1)  # Brief pause to ensure UI updates
+                            st.rerun()  # Refresh the page to update model list
+                        else:
+                            st.error(f"Error deleting model: {result.get('error')}")
+
+        elif operation != "Select...":
+            st.info("Please select an operation from the dropdown above.")

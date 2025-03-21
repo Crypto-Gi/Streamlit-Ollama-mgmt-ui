@@ -8,6 +8,7 @@ import pandas as pd
 # Import components and utilities
 from utils.api_handler import OllamaAPI
 from utils.styling import apply_custom_styling
+from utils.button_handler import handle_button_click
 from components.sidebar import render_sidebar
 from components.model_management import render_model_management
 from components.model_interaction import render_model_interaction
@@ -38,6 +39,8 @@ if "server_info" not in st.session_state:
     st.session_state.server_info = {}
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = True  # Default to dark mode
+if "button_clicked" not in st.session_state:
+    st.session_state.button_clicked = {}
 
 # Custom CSS to style the app
 st.markdown("""

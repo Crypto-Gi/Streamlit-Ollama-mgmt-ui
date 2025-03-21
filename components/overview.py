@@ -8,7 +8,7 @@ import plotly.express as px
 def render_overview(api):
     """Render the overview dashboard with model summary cards"""
     
-    st.markdown("<div class='card-title'>Models Overview</div>", unsafe_allow_html=True)
+    st.markdown("<div class='header-container'><h1 class='header-text'>Dashboard</h1></div>", unsafe_allow_html=True)
     
     # Check if API is connected first
     if not st.session_state.get("api_connected", False):
@@ -247,7 +247,7 @@ def render_overview(api):
                 
                 # Construct model card with fixed dimensions
                 card_content = f"""
-                <div class="card">
+                <div class="card metric-card-yellow">
                     <div class="card-title" title="{model_name}">{display_name}</div>
                     <div class="card-subtitle">
                         <strong>Size:</strong> {size_str}<br/>
