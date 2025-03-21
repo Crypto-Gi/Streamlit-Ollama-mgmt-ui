@@ -49,6 +49,15 @@ Listed in `requirements.txt`:
   - Added custom minutes input option for precise control over model expiration
   - Better error handling and success messages
 
+## Version 1.01
+**GUI work in progress**
+
+- Enhanced dark mode styling to match reference design
+- Improved model card UI with yellow background and green status indicators
+- Added button handler utility to prevent double-click issues
+- Refined UI elements for better visual consistency
+- Improved layout for model management page
+
 ## Version 1.0.0 (2025-03-13)
 
 ### Initial Release Features
